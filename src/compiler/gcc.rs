@@ -268,6 +268,7 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
+    let mut seen_multiple_arch = false;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -360,12 +361,16 @@ where
             }
             Some(Arch(arch)) => {
                 // see https://github.com/mozilla/sccache/issues/847
-                if !enable_multiple_arch {
-                    match seen_arch {
-                        Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
-                        _ => {}
-                    };
-                }
+                match seen_arch {
+                    Some(s) if &s != arch => {
+                        if !enable_multiple_arch {
+                            cannot_cache!("multiple different -arch")
+                        } else {
+                            seen_multiple_arch = true;
+                        }
+                    }
+                    _ => {}
+                };
                 seen_arch = Some(arch.clone());
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
@@ -395,8 +400,11 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Arch(_)) => {
-                // Skip -arch arguments
-                continue;
+                if seen_multiple_arch {
+                    // Skip -arch arguments if we've seen multiple different ones.
+                    continue;
+                }
+                &mut common_args
             }
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
