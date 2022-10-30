@@ -268,7 +268,6 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
-    let mut seen_multiple_arch = false;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -361,17 +360,13 @@ where
             }
             Some(Arch(arch)) => {
                 // see https://github.com/mozilla/sccache/issues/847
-                match seen_arch {
-                    Some(s) if &s != arch => {
-                        if !enable_multiple_arch {
-                            cannot_cache!("multiple different -arch")
-                        } else {
-                            seen_multiple_arch = true;
-                        }
-                    }
-                    _ => {}
-                };
-                seen_arch = Some(arch.clone());
+                if !enable_multiple_arch {
+                    match seen_arch {
+                        Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
+                        _ => {}
+                    };
+                    seen_arch = Some(arch.clone());
+                }
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
@@ -397,15 +392,9 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
+            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
-            Some(Arch(_)) => {
-                if seen_multiple_arch {
-                    // Skip -arch arguments if we've seen multiple different ones.
-                    continue;
-                }
-                &mut common_args
-            }
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
@@ -637,10 +626,38 @@ fn preprocess_cmd<T>(
             }
         }
     }
+
+    // Filter common args that are not needed for preprocessing.
+    let mut common_args = parsed_args.common_args.clone();
+    let mut i = 0;
+    let mut seen_arch: Option<OsString> = None;
+    while i < common_args.len() {
+        let arg = &common_args[i];
+        if arg == "-arch" {
+            match &seen_arch {
+                Some(s) => {
+                    if s == &common_args[i + 1] {
+                        i += 2;
+                    } else {
+                        // Remove -arch and the following argument.
+                        common_args.remove(i);
+                        common_args.remove(i);
+                    }
+                }
+                _ => {
+                    seen_arch = Some(common_args[i + 1].clone());
+                    i += 2;
+                }
+            };
+        } else {
+            i += 1;
+        }
+    }
+
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
-        .args(&parsed_args.common_args)
+        .args(&common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
